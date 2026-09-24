@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-plugin-searxng",
+  "version": "0.1.0",
+  "description": "SearXNG websearch provider plugin for OpenCode V2",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ron Miller",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StreamOfRon/opencode-plugin-searxng.git"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types test/smoke.mts"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "searxng",
+    "websearch"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "^2.0.15",
+    "@opencode/schema": "^2.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.2"
+  }
+}
