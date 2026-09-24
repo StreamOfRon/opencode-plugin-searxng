@@ -49,13 +49,19 @@ automatically.
 Only `baseURL` normally needs configuring; everything else has sane
 defaults. With zero options the plugin talks to `http://localhost:8080`.
 
+Search params (`categories`, `language`, `safesearch`, `time_range`) are only
+sent when you configure them — otherwise your instance's own `settings.yml`
+defaults apply. Requests use a 25 s timeout and refuse response bodies over
+256 KB, matching OpenCode's builtin websearch providers.
+
 | Option         | Type             | Default                 | Env fallback      | Notes                                             |
 | -------------- | ---------------- | ----------------------- | ----------------- | ------------------------------------------------- |
 | `baseURL`      | string           | `http://localhost:8080` | `SEARXNG_URL`     | Instance base URL (no trailing slash needed)      |
-| `categories`   | string \| array  | `"general,news,it"`     | —                 | e.g. `"general,it"` or `["general", "news"]`      |
-| `language`     | string           | `"all"`                 | —                 | `"en"`, `"de"`, …                                 |
-| `safesearch`   | number           | `0` (off)               | —                 | `0` off, `1` moderate, `2` strict                 |
-| `maxResults`   | number           | `10`                    | —                 | Results handed to the agent                       |
+| `categories`   | string \| array  | — (instance default)    | —                 | e.g. `"general,it"` or `["general", "news"]`      |
+| `language`     | string           | — (instance default)    | —                 | `"en"`, `"de"`, …                                 |
+| `safesearch`   | number           | — (instance default)    | —                 | `0` off, `1` moderate, `2` strict                 |
+| `time_range`   | string           | — (instance default)    | —                 | `day`, `week`, `month`, or `year`                 |
+| `maxResults`   | number           | `8`                     | —                 | Results handed to the agent                       |
 | `apiKey`       | string           | — (optional)            | `SEARXNG_API_KEY` | Sent as `Authorization: Bearer …` only when set   |
 | `useAsDefault` | boolean          | `true`                  | —                 | `false` registers the provider without selecting it |
 
