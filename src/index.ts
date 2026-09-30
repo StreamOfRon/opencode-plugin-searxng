@@ -85,7 +85,8 @@ async function collectBoundedResponseBody(response: Response): Promise<string> {
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
     throw new Error(`SearXNG response exceeded ${MAX_RESPONSE_BYTES} bytes`)
   }
-  const reader = response.body!.getReader()
+  if (!response.body) throw new Error("SearXNG returned an empty response body")
+  const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let received = 0
   let text = ""
@@ -99,6 +100,7 @@ async function collectBoundedResponseBody(response: Response): Promise<string> {
     }
     text += decoder.decode(value, { stream: true })
   }
+  text += decoder.decode()
   return text
 }
 

@@ -144,4 +144,51 @@ globalThis.fetch = originalFetch
 const badRange = transformCtx({ baseURL: "https://searx.test", time_range: "hour" })
 await assert.rejects(() => plugin.setup(badRange.ctx), /time_range/)
 
+// Multibyte character split across stream chunks: é (0xC3 0xA9) must survive
+// the chunk boundary — this guards the decoder's streaming carry ({ stream:
+// true }); without that flag each chunk's trailing lone byte would decode to
+// U+FFFD and corrupt the title.
+const utfBody = new TextEncoder().encode(
+  JSON.stringify({
+    results: [{ url: "https://example.com/caf%C3%A9", title: "café", content: "se lit" }],
+  }),
+)
+const utfSplit = utfBody.indexOf(0xc3) + 1
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(),
+  body: new ReadableStream({
+    start(controller) {
+      controller.enqueue(utfBody.slice(0, utfSplit))
+      controller.enqueue(utfBody.slice(utfSplit))
+      controller.close()
+    },
+  }),
+})
+const utfResults = await configured.registered.execute(
+  { query: "café" },
+  { signal: new AbortController().signal },
+)
+assert.equal(utfResults[0]?.title, "café")
+
+globalThis.fetch = originalFetch
+
+// A null body must fail with a clean error, not a raw TypeError from
+// reading getReader off null.
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(),
+  body: null,
+})
+await assert.rejects(
+  () => configured.registered.execute({ query: "null" }, { signal: new AbortController().signal }),
+  /empty response body/,
+)
+
+globalThis.fetch = originalFetch
+
 console.log("smoke test passed")
