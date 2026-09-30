@@ -3,57 +3,80 @@
  *
  * Exercises the plugin against a fake OpenCode context and a mocked
  * SearXNG JSON API: registration, option handling, URL building,
- * result mapping, and maxResults clamping.
+ * result mapping, maxResults clamping, and the bounded response read.
  */
 import assert from "node:assert/strict"
 import plugin from "../src/index.ts"
 
-const ctx = {
-  options: { baseURL: "https://searx.test/", categories: ["general", "news"], safesearch: 1, maxResults: 3 },
-  websearch: {
-    transform: async (cb) => {
-      cb({
-        add: (definition) => {
-          registered = definition
-        },
-        default: { get: () => undefined, set: (value) => { defaultSet = value } },
-      })
+const MAX_RESPONSE_BYTES = 262_144
+
+/** Mock response exposing only what execute() reads: headers and body. */
+const jsonResponse = (body, headers = []) => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(headers),
+  body: new Blob([JSON.stringify(body)]).stream(),
+})
+
+const transformCtx = (options) => {
+  let registered
+  let defaultSet
+  const ctx = {
+    options,
+    websearch: {
+      transform: async (cb) => {
+        cb({
+          add: (definition) => {
+            registered = definition
+          },
+          default: { get: () => undefined, set: (value) => { defaultSet = value } },
+        })
+      },
     },
-  },
+  }
+  return { ctx, get registered() { return registered }, get defaultSet() { return defaultSet } }
 }
-
-let registered
-let defaultSet
-await plugin.setup(ctx)
-
-assert.equal(registered?.id, "searxng")
-assert.equal(registered?.name, "SearXNG")
-assert.equal(defaultSet, "searxng")
 
 const originalFetch = globalThis.fetch
+
+// Configured path: every configured param must appear in the request URL.
+const configured = transformCtx({
+  baseURL: "https://searx.test/",
+  categories: ["general", "news"],
+  language: "all",
+  safesearch: 1,
+  time_range: "week",
+  maxResults: 3,
+})
+await plugin.setup(configured.ctx)
+
+assert.equal(configured.registered?.id, "searxng")
+assert.equal(configured.registered?.name, "SearXNG")
+assert.equal(configured.defaultSet, "searxng")
+
+let requestedUrl
 globalThis.fetch = async (url) => {
   requestedUrl = String(url)
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({
-      results: [
-        { url: "https://a.example", title: "A", content: "aaa", publishedDate: "2026-01-02T03:04:05" },
-        { url: "https://b.example", title: "B" },
-        { title: "no url — should be dropped" },
-        { url: "https://d.example", publishedDate: 1700000000 },
-        { url: "https://e.example", title: "E" },
-      ],
-    }),
-  }
+  return jsonResponse({
+    results: [
+      { url: "https://a.example", title: "A", content: "aaa", publishedDate: "2026-01-02T03:04:05" },
+      { url: "https://b.example", title: "B" },
+      { title: "no url — should be dropped" },
+      { url: "https://d.example", publishedDate: 1700000000 },
+      { url: "https://e.example", title: "E" },
+    ],
+  })
 }
-let requestedUrl
 
-const results = await registered.execute({ query: "hello world" }, { signal: new AbortController().signal })
+const results = await configured.registered.execute(
+  { query: "hello world" },
+  { signal: new AbortController().signal },
+)
 
 assert.equal(
   requestedUrl,
-  "https://searx.test/search?q=hello+world&format=json&categories=general%2Cnews&language=all&safesearch=1",
+  "https://searx.test/search?q=hello+world&format=json&categories=general%2Cnews&language=all&safesearch=1&time_range=week",
 )
 assert.deepEqual(results, [
   { url: "https://a.example", title: "A", content: "aaa", time: { published: Date.parse("2026-01-02T03:04:05") } },
@@ -64,38 +87,108 @@ assert.deepEqual(results, [
 // Error path: 403 should mention the JSON format setting.
 globalThis.fetch = async () => ({ ok: false, status: 403, statusText: "Forbidden", url: "https://searx.test" })
 await assert.rejects(
-  () => registered.execute({ query: "x" }, { signal: new AbortController().signal }),
+  () => configured.registered.execute({ query: "x" }, { signal: new AbortController().signal }),
   /JSON format/,
 )
 
 globalThis.fetch = originalFetch
 
-// Defaults path: no options besides the instance URL.
-let defaultRegistered
-const defaultsCtx = {
-  options: { baseURL: "https://searx.test" },
-  websearch: {
-    transform: async (cb) => {
-      cb({
-        add: (definition) => {
-          defaultRegistered = definition
-        },
-        default: { get: () => undefined, set: () => {} },
-      })
-    },
-  },
-}
-await plugin.setup(defaultsCtx)
+// Defaults path: only baseURL configured — no search params beyond q/format,
+// and maxResults falls back to 8.
+const defaults = transformCtx({ baseURL: "https://searx.test" })
+await plugin.setup(defaults.ctx)
 let defaultUrl
 globalThis.fetch = async (url) => {
   defaultUrl = String(url)
-  return { ok: true, status: 200, json: async () => ({ results: [] }) }
+  return jsonResponse({
+    results: Array.from({ length: 10 }, (_, i) => ({ url: `https://r${i}.example`, title: `R${i}` })),
+  })
 }
-await defaultRegistered.execute({ query: "go" }, { signal: new AbortController().signal })
-assert.equal(
-  defaultUrl,
-  "https://searx.test/search?q=go&format=json&categories=general%2Cnews%2Cit&language=all&safesearch=0",
+const defaultResults = await defaults.registered.execute(
+  { query: "go" },
+  { signal: new AbortController().signal },
 )
+assert.equal(defaultUrl, "https://searx.test/search?q=go&format=json")
+assert.equal(defaultResults.length, 8)
+assert.deepEqual(defaultResults[0], { url: "https://r0.example", title: "R0", content: undefined, time: {} })
+globalThis.fetch = originalFetch
+
+// Response body cap: a declared content-length over 256 KB is rejected unread.
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers({ "content-length": String(MAX_RESPONSE_BYTES + 1) }),
+})
+await assert.rejects(
+  () => configured.registered.execute({ query: "big" }, { signal: new AbortController().signal }),
+  /exceeded 262144/,
+)
+
+// Response body cap: a streamed body growing past 256 KB is cancelled.
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(),
+  body: new Blob([new Uint8Array(MAX_RESPONSE_BYTES + 1)]).stream(),
+})
+await assert.rejects(
+  () => configured.registered.execute({ query: "bigger" }, { signal: new AbortController().signal }),
+  /exceeded 262144/,
+)
+
+globalThis.fetch = originalFetch
+
+// Invalid time_range must fail at setup time.
+const badRange = transformCtx({ baseURL: "https://searx.test", time_range: "hour" })
+await assert.rejects(() => plugin.setup(badRange.ctx), /time_range/)
+
+// Multibyte character split across stream chunks: é (0xC3 0xA9) must survive
+// the chunk boundary — this guards the decoder's streaming carry ({ stream:
+// true }); without that flag each chunk's trailing lone byte would decode to
+// U+FFFD and corrupt the title.
+const utfBody = new TextEncoder().encode(
+  JSON.stringify({
+    results: [{ url: "https://example.com/caf%C3%A9", title: "café", content: "se lit" }],
+  }),
+)
+const utfSplit = utfBody.indexOf(0xc3) + 1
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(),
+  body: new ReadableStream({
+    start(controller) {
+      controller.enqueue(utfBody.slice(0, utfSplit))
+      controller.enqueue(utfBody.slice(utfSplit))
+      controller.close()
+    },
+  }),
+})
+const utfResults = await configured.registered.execute(
+  { query: "café" },
+  { signal: new AbortController().signal },
+)
+assert.equal(utfResults[0]?.title, "café")
+
+globalThis.fetch = originalFetch
+
+// A null body must fail with a clean error, not a raw TypeError from
+// reading getReader off null.
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  headers: new Headers(),
+  body: null,
+})
+await assert.rejects(
+  () => configured.registered.execute({ query: "null" }, { signal: new AbortController().signal }),
+  /empty response body/,
+)
+
 globalThis.fetch = originalFetch
 
 console.log("smoke test passed")
