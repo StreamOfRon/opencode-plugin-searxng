@@ -27,7 +27,7 @@
     "websearch"
   ],
   "dependencies": {
-    "@opencode/plugin": "^2.0.15",
+    "@opencode/plugin": "^2.0.21",
     "@opencode/schema": "^2.0.15"
   },
   "devDependencies": {
